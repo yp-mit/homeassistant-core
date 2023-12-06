@@ -52,13 +52,15 @@ def setup_platform(
         ports = platform[CONF_PORTS]
         for port, port_name in ports.items():
             try:
-
                 api.setup_input(device_id, port)
                 api.edge_detect(device_id, port, partial(read_gpio, device_id))
 
             except NumatoGpioError as err:
                 _LOGGER.error(
-                    "Failed to initialize binary sensor '%s' on Numato device %s port %s: %s",
+                    (
+                        "Failed to initialize binary sensor '%s' on Numato device %s"
+                        " port %s: %s"
+                    ),
                     port_name,
                     device_id,
                     port,
@@ -92,7 +94,7 @@ class NumatoGpioBinarySensor(BinarySensorEntity):
         self._state = None
         self._api = api
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Connect state update callback."""
         self.async_on_remove(
             async_dispatcher_connect(
@@ -118,7 +120,7 @@ class NumatoGpioBinarySensor(BinarySensorEntity):
         """Return the state of the entity."""
         return self._state != self._invert_logic
 
-    def update(self):
+    def update(self) -> None:
         """Update the GPIO state."""
         try:
             self._state = self._api.read_input(self._device_id, self._port)

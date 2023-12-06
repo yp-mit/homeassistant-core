@@ -13,11 +13,10 @@ from homeassistant.components.light import (
     ATTR_HS_COLOR,
     ATTR_TRANSITION,
     ENTITY_ID_FORMAT,
-    SUPPORT_BRIGHTNESS,
-    SUPPORT_COLOR,
-    SUPPORT_COLOR_TEMP,
+    ColorMode,
     LightEntity,
     LightEntityFeature,
+    filter_supported_color_modes,
 )
 from homeassistant.const import (
     CONF_ENTITY_ID,
@@ -182,9 +181,27 @@ class LightTemplate(TemplateEntity, LightEntity):
         self._color = None
         self._effect = None
         self._effect_list = None
+        self._fixed_color_mode = None
         self._max_mireds = None
         self._min_mireds = None
         self._supports_transition = False
+
+        color_modes = {ColorMode.ONOFF}
+        if self._level_script is not None:
+            color_modes.add(ColorMode.BRIGHTNESS)
+        if self._temperature_script is not None:
+            color_modes.add(ColorMode.COLOR_TEMP)
+        if self._color_script is not None:
+            color_modes.add(ColorMode.HS)
+        self._supported_color_modes = filter_supported_color_modes(color_modes)
+        if len(self._supported_color_modes) == 1:
+            self._fixed_color_mode = next(iter(self._supported_color_modes))
+
+        self._attr_supported_features = LightEntityFeature(0)
+        if self._effect_script is not None:
+            self._attr_supported_features |= LightEntityFeature.EFFECT
+        if self._supports_transition is True:
+            self._attr_supported_features |= LightEntityFeature.TRANSITION
 
     @property
     def brightness(self) -> int | None:
@@ -228,28 +245,28 @@ class LightTemplate(TemplateEntity, LightEntity):
         return self._effect_list
 
     @property
-    def supported_features(self) -> int:
-        """Flag supported features."""
-        supported_features = 0
-        if self._level_script is not None:
-            supported_features |= SUPPORT_BRIGHTNESS
-        if self._temperature_script is not None:
-            supported_features |= SUPPORT_COLOR_TEMP
-        if self._color_script is not None:
-            supported_features |= SUPPORT_COLOR
-        if self._effect_script is not None:
-            supported_features |= LightEntityFeature.EFFECT
-        if self._supports_transition is True:
-            supported_features |= LightEntityFeature.TRANSITION
-        return supported_features
+    def color_mode(self):
+        """Return current color mode."""
+        if self._fixed_color_mode:
+            return self._fixed_color_mode
+        # Support for ct + hs, prioritize hs
+        if self._color is not None:
+            return ColorMode.HS
+        return ColorMode.COLOR_TEMP
+
+    @property
+    def supported_color_modes(self):
+        """Flag supported color modes."""
+        return self._supported_color_modes
 
     @property
     def is_on(self) -> bool | None:
         """Return true if device is on."""
         return self._state
 
-    async def async_added_to_hass(self) -> None:
-        """Register callbacks."""
+    @callback
+    def _async_setup_templates(self) -> None:
+        """Set up templates."""
         if self._template:
             self.add_template_attribute(
                 "_state", self._template, None, self._update_state
@@ -318,7 +335,7 @@ class LightTemplate(TemplateEntity, LightEntity):
                 self._update_supports_transition,
                 none_on_template_error=True,
             )
-        await super().async_added_to_hass()
+        super()._async_setup_templates()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
@@ -439,9 +456,8 @@ class LightTemplate(TemplateEntity, LightEntity):
                 )
                 self._brightness = None
         except ValueError:
-            _LOGGER.error(
-                "Template must supply an integer brightness from 0-255, or 'None'",
-                exc_info=True,
+            _LOGGER.exception(
+                "Template must supply an integer brightness from 0-255, or 'None'"
             )
             self._brightness = None
 
@@ -454,7 +470,10 @@ class LightTemplate(TemplateEntity, LightEntity):
 
         if not isinstance(effect_list, list):
             _LOGGER.error(
-                "Received invalid effect list: %s for entity %s. Expected list of strings",
+                (
+                    "Received invalid effect list: %s for entity %s. Expected list of"
+                    " strings"
+                ),
                 effect_list,
                 self.entity_id,
             )
@@ -525,7 +544,10 @@ class LightTemplate(TemplateEntity, LightEntity):
                 self._temperature = temperature
             else:
                 _LOGGER.error(
-                    "Received invalid color temperature : %s for entity %s. Expected: %s-%s",
+                    (
+                        "Received invalid color temperature : %s for entity %s."
+                        " Expected: %s-%s"
+                    ),
                     temperature,
                     self.entity_id,
                     self.min_mireds,
@@ -533,9 +555,9 @@ class LightTemplate(TemplateEntity, LightEntity):
                 )
                 self._temperature = None
         except ValueError:
-            _LOGGER.error(
-                "Template must supply an integer temperature within the range for this light, or 'None'",
-                exc_info=True,
+            _LOGGER.exception(
+                "Template must supply an integer temperature within the range for"
+                " this light, or 'None'"
             )
             self._temperature = None
 
@@ -566,7 +588,10 @@ class LightTemplate(TemplateEntity, LightEntity):
             self._color = (h_str, s_str)
         elif h_str is not None and s_str is not None:
             _LOGGER.error(
-                "Received invalid hs_color : (%s, %s) for entity %s. Expected: (0-360, 0-100)",
+                (
+                    "Received invalid hs_color : (%s, %s) for entity %s. Expected:"
+                    " (0-360, 0-100)"
+                ),
                 h_str,
                 s_str,
                 self.entity_id,
@@ -588,9 +613,9 @@ class LightTemplate(TemplateEntity, LightEntity):
                 return
             self._max_mireds = int(render)
         except ValueError:
-            _LOGGER.error(
-                "Template must supply an integer temperature within the range for this light, or 'None'",
-                exc_info=True,
+            _LOGGER.exception(
+                "Template must supply an integer temperature within the range for"
+                " this light, or 'None'"
             )
             self._max_mireds = None
 
@@ -603,9 +628,9 @@ class LightTemplate(TemplateEntity, LightEntity):
                 return
             self._min_mireds = int(render)
         except ValueError:
-            _LOGGER.error(
-                "Template must supply an integer temperature within the range for this light, or 'None'",
-                exc_info=True,
+            _LOGGER.exception(
+                "Template must supply an integer temperature within the range for"
+                " this light, or 'None'"
             )
             self._min_mireds = None
 
@@ -615,4 +640,7 @@ class LightTemplate(TemplateEntity, LightEntity):
         if render in (None, "None", ""):
             self._supports_transition = False
             return
+        self._attr_supported_features &= LightEntityFeature.EFFECT
         self._supports_transition = bool(render)
+        if self._supports_transition:
+            self._attr_supported_features |= LightEntityFeature.TRANSITION

@@ -5,78 +5,23 @@ import logging
 
 from anthemav.connection import Connection
 from anthemav.protocol import AVR
-import voluptuous as vol
 
 from homeassistant.components.media_player import (
-    PLATFORM_SCHEMA,
     MediaPlayerDeviceClass,
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
+    MediaPlayerState,
 )
-from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
-from homeassistant.const import (
-    CONF_HOST,
-    CONF_MAC,
-    CONF_NAME,
-    CONF_PORT,
-    STATE_OFF,
-    STATE_ON,
-)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_MAC
 from homeassistant.core import HomeAssistant, callback
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from .const import (
-    ANTHEMAV_UDATE_SIGNAL,
-    CONF_MODEL,
-    DEFAULT_NAME,
-    DEFAULT_PORT,
-    DOMAIN,
-    MANUFACTURER,
-)
+from .const import ANTHEMAV_UPDATE_SIGNAL, CONF_MODEL, DOMAIN, MANUFACTURER
 
 _LOGGER = logging.getLogger(__name__)
-
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_HOST): cv.string,
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-        vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
-    }
-)
-
-
-async def async_setup_platform(
-    hass: HomeAssistant,
-    config: ConfigType,
-    async_add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None,
-) -> None:
-    """Set up our socket to the AVR."""
-    async_create_issue(
-        hass,
-        DOMAIN,
-        "deprecated_yaml",
-        breaks_in_ha_version="2022.10.0",
-        is_fixable=False,
-        severity=IssueSeverity.WARNING,
-        translation_key="deprecated_yaml",
-    )
-    _LOGGER.warning(
-        "Configuration of the Anthem A/V Receivers integration in YAML is "
-        "deprecated and will be removed in Home Assistant 2022.10; Your "
-        "existing configuration has been imported into the UI automatically "
-        "and can be safely removed from your configuration.yaml file"
-    )
-    await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_IMPORT},
-        data=config,
-    )
 
 
 async def async_setup_entry(
@@ -85,7 +30,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up entry."""
-    name = config_entry.data[CONF_NAME]
+    name = config_entry.title
     mac_address = config_entry.data[CONF_MAC]
     model = config_entry.data[CONF_MODEL]
 
@@ -135,6 +80,7 @@ class AnthemAVR(MediaPlayerEntity):
             self._attr_name = f"zone {zone_number}"
             self._attr_unique_id = f"{mac_address}_{zone_number}"
         else:
+            self._attr_name = None
             self._attr_unique_id = mac_address
 
         self._attr_device_info = DeviceInfo(
@@ -150,7 +96,7 @@ class AnthemAVR(MediaPlayerEntity):
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,
-                f"{ANTHEMAV_UDATE_SIGNAL}_{self._entry_id}",
+                f"{ANTHEMAV_UPDATE_SIGNAL}_{self._entry_id}",
                 self.update_states,
             )
         )
@@ -163,7 +109,9 @@ class AnthemAVR(MediaPlayerEntity):
 
     def set_states(self) -> None:
         """Set all the states from the device to the entity."""
-        self._attr_state = STATE_ON if self._zone.power is True else STATE_OFF
+        self._attr_state = (
+            MediaPlayerState.ON if self._zone.power else MediaPlayerState.OFF
+        )
         self._attr_is_volume_muted = self._zone.mute
         self._attr_volume_level = self._zone.volume_as_percentage
         self._attr_media_title = self._zone.input_name

@@ -13,8 +13,6 @@ from homeassistant.helpers.typing import ConfigType
 from . import DEVICE_TRIGGER_BASE_SCHEMA
 from .const import CONF_CHANGED_STATES
 
-# mypy: allow-untyped-calls, allow-untyped-defs
-
 ENTITY_TRIGGERS = [
     {
         # Trigger when entity is turned on or off
@@ -25,7 +23,7 @@ ENTITY_TRIGGERS = [
 
 TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
     {
-        vol.Required(CONF_ENTITY_ID): cv.entity_id,
+        vol.Required(CONF_ENTITY_ID): cv.entity_id_or_uuid,
         vol.Required(CONF_TYPE): vol.In([CONF_CHANGED_STATES]),
         vol.Optional(CONF_FOR): cv.positive_time_period_dict,
     }
@@ -75,7 +73,7 @@ async def _async_get_automations(
             {
                 **template,
                 "device_id": device_id,
-                "entity_id": entry.entity_id,
+                "entity_id": entry.id,
                 "domain": domain,
             }
             for template in automation_templates

@@ -1,4 +1,4 @@
-"""This component provides support to the Ring Door Bell camera."""
+"""Component providing support to the Ring Door Bell camera."""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -48,19 +48,21 @@ async def async_setup_entry(
 class RingCam(RingEntityMixin, Camera):
     """An implementation of a Ring Door Bell camera."""
 
+    _attr_name = None
+
     def __init__(self, config_entry_id, ffmpeg_manager, device):
         """Initialize a Ring Door Bell camera."""
         super().__init__(config_entry_id, device)
 
-        self._name = self._device.name
         self._ffmpeg_manager = ffmpeg_manager
         self._last_event = None
         self._last_video_id = None
         self._video_url = None
         self._image = None
         self._expires_at = dt_util.utcnow() - FORCE_REFRESH_INTERVAL
+        self._attr_unique_id = device.id
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Register callbacks."""
         await super().async_added_to_hass()
 
@@ -68,7 +70,7 @@ class RingCam(RingEntityMixin, Camera):
             self._device, self._history_update_callback
         )
 
-    async def async_will_remove_from_hass(self):
+    async def async_will_remove_from_hass(self) -> None:
         """Disconnect callbacks."""
         await super().async_will_remove_from_hass()
 
@@ -89,16 +91,6 @@ class RingCam(RingEntityMixin, Camera):
             self._image = None
             self._expires_at = dt_util.utcnow()
             self.async_write_ha_state()
-
-    @property
-    def name(self):
-        """Return the name of this camera."""
-        return self._name
-
-    @property
-    def unique_id(self):
-        """Return a unique ID."""
-        return self._device.id
 
     @property
     def extra_state_attributes(self):
@@ -144,7 +136,7 @@ class RingCam(RingEntityMixin, Camera):
         finally:
             await stream.close()
 
-    async def async_update(self):
+    async def async_update(self) -> None:
         """Update camera entity and refresh attributes."""
         if self._last_event is None:
             return

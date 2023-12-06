@@ -29,8 +29,8 @@ async def test_form(hass: HomeAssistant) -> None:
                 "username": "test-username",
                 "password": "test-password",
                 "region": "na",
+                "unit_system": "metric",
                 "mutable": True,
-                "scandinavian_miles": False,
             },
         )
         await hass.async_block_till_done()
@@ -41,8 +41,8 @@ async def test_form(hass: HomeAssistant) -> None:
         "username": "test-username",
         "password": "test-password",
         "region": "na",
+        "unit_system": "metric",
         "mutable": True,
-        "scandinavian_miles": False,
     }
     assert len(mock_setup_entry.mock_calls) == 1
 
@@ -65,8 +65,8 @@ async def test_form_invalid_auth(hass: HomeAssistant) -> None:
                 "username": "test-username",
                 "password": "test-password",
                 "region": "na",
+                "unit_system": "metric",
                 "mutable": True,
-                "scandinavian_miles": False,
             },
         )
 
@@ -95,8 +95,8 @@ async def test_flow_already_configured(hass: HomeAssistant) -> None:
                 "username": "test-username",
                 "password": "test-password",
                 "region": "na",
+                "unit_system": "metric",
                 "mutable": True,
-                "scandinavian_miles": False,
             },
         )
         await hass.async_block_till_done()
@@ -121,8 +121,8 @@ async def test_form_other_exception(hass: HomeAssistant) -> None:
                 "username": "test-username",
                 "password": "test-password",
                 "region": "na",
+                "unit_system": "metric",
                 "mutable": True,
-                "scandinavian_miles": False,
             },
         )
 
@@ -130,40 +130,54 @@ async def test_form_other_exception(hass: HomeAssistant) -> None:
     assert result2["errors"] == {"base": "unknown"}
 
 
-async def test_import(hass: HomeAssistant) -> None:
-    """Test a YAML import."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_IMPORT}
-    )
-    assert result["type"] == FlowResultType.FORM
-    assert len(result["errors"]) == 0
+async def test_reauth(hass: HomeAssistant) -> None:
+    """Test that we handle the reauth flow."""
 
-    with patch("volvooncall.Connection.get"), patch(
-        "homeassistant.components.volvooncall.async_setup",
-        return_value=True,
-    ), patch(
-        "homeassistant.components.volvooncall.async_setup_entry",
-        return_value=True,
-    ) as mock_setup_entry:
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
+    first_entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="test-username",
+        data={
+            "username": "test-username",
+            "password": "test-password",
+            "region": "na",
+            "unit_system": "metric",
+            "mutable": True,
+        },
+    )
+    first_entry.add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={
+            "source": config_entries.SOURCE_REAUTH,
+            "entry_id": first_entry.entry_id,
+        },
+    )
+
+    # the first form is just the confirmation prompt
+    assert result["type"] == FlowResultType.FORM
+
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {},
+    )
+    await hass.async_block_till_done()
+
+    # the second form is the user flow where reauth happens
+    assert result2["type"] == FlowResultType.FORM
+
+    with patch("volvooncall.Connection.get"):
+        result3 = await hass.config_entries.flow.async_configure(
+            result2["flow_id"],
             {
                 "username": "test-username",
-                "password": "test-password",
+                "password": "test-new-password",
                 "region": "na",
+                "unit_system": "metric",
                 "mutable": True,
-                "scandinavian_miles": False,
             },
         )
         await hass.async_block_till_done()
 
-    assert result2["type"] == FlowResultType.CREATE_ENTRY
-    assert result2["title"] == "test-username"
-    assert result2["data"] == {
-        "username": "test-username",
-        "password": "test-password",
-        "region": "na",
-        "mutable": True,
-        "scandinavian_miles": False,
-    }
-    assert len(mock_setup_entry.mock_calls) == 1
+    assert result3["type"] == FlowResultType.ABORT
+    assert result3["reason"] == "reauth_successful"

@@ -20,13 +20,11 @@ from homeassistant.components.media_player import (
     MediaPlayerEntity,
     MediaPlayerEntityDescription,
     MediaPlayerEntityFeature,
-)
-from homeassistant.components.media_player.browse_media import (
+    MediaPlayerState,
+    MediaType,
     async_process_play_media_url,
 )
-from homeassistant.components.media_player.const import MEDIA_TYPE_MUSIC
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_IDLE, STATE_PLAYING
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -95,26 +93,47 @@ class ProtectMediaPlayer(ProtectDeviceEntity, MediaPlayerEntity):
         )
 
         self._attr_name = f"{self.device.display_name} Speaker"
-        self._attr_media_content_type = MEDIA_TYPE_MUSIC
+        self._attr_media_content_type = MediaType.MUSIC
 
     @callback
     def _async_update_device_from_protect(self, device: ProtectModelWithId) -> None:
         super()._async_update_device_from_protect(device)
-        self._attr_volume_level = float(self.device.speaker_settings.volume / 100)
+        updated_device = self.device
+        self._attr_volume_level = float(updated_device.speaker_settings.volume / 100)
 
         if (
-            self.device.talkback_stream is not None
-            and self.device.talkback_stream.is_running
+            updated_device.talkback_stream is not None
+            and updated_device.talkback_stream.is_running
         ):
-            self._attr_state = STATE_PLAYING
+            self._attr_state = MediaPlayerState.PLAYING
         else:
-            self._attr_state = STATE_IDLE
+            self._attr_state = MediaPlayerState.IDLE
 
         is_connected = self.data.last_update_success and (
-            self.device.state == StateType.CONNECTED
-            or (not self.device.is_adopted_by_us and self.device.can_adopt)
+            updated_device.state == StateType.CONNECTED
+            or (not updated_device.is_adopted_by_us and updated_device.can_adopt)
         )
-        self._attr_available = is_connected and self.device.feature_flags.has_speaker
+        self._attr_available = is_connected and updated_device.feature_flags.has_speaker
+
+    @callback
+    def _async_updated_event(self, device: ProtectModelWithId) -> None:
+        """Call back for incoming data that only writes when state has changed.
+
+        Only the state, volume, and available are ever updated for these
+        entities, and since the websocket update for the device will trigger
+        an update for all entities connected to the device, we want to avoid
+        writing state unless something has actually changed.
+        """
+        previous_state = self._attr_state
+        previous_available = self._attr_available
+        previous_volume_level = self._attr_volume_level
+        self._async_update_device_from_protect(device)
+        if (
+            self._attr_state != previous_state
+            or self._attr_volume_level != previous_volume_level
+            or self._attr_available != previous_available
+        ):
+            self.async_write_ha_state()
 
     async def async_set_volume_level(self, volume: float) -> None:
         """Set volume level, range 0..1."""
@@ -134,17 +153,17 @@ class ProtectMediaPlayer(ProtectDeviceEntity, MediaPlayerEntity):
             self._async_updated_event(self.device)
 
     async def async_play_media(
-        self, media_type: str, media_id: str, **kwargs: Any
+        self, media_type: MediaType | str, media_id: str, **kwargs: Any
     ) -> None:
         """Play a piece of media."""
         if media_source.is_media_source_id(media_id):
-            media_type = MEDIA_TYPE_MUSIC
+            media_type = MediaType.MUSIC
             play_item = await media_source.async_resolve_media(
                 self.hass, media_id, self.entity_id
             )
             media_id = async_process_play_media_url(self.hass, play_item.url)
 
-        if media_type != MEDIA_TYPE_MUSIC:
+        if media_type != MediaType.MUSIC:
             raise HomeAssistantError("Only music media type is supported")
 
         _LOGGER.debug(
@@ -155,16 +174,18 @@ class ProtectMediaPlayer(ProtectDeviceEntity, MediaPlayerEntity):
             await self.device.play_audio(media_id, blocking=False)
         except StreamError as err:
             raise HomeAssistantError(err) from err
-        else:
-            # update state after starting player
-            self._async_updated_event(self.device)
-            # wait until player finishes to update state again
-            await self.device.wait_until_audio_completes()
+
+        # update state after starting player
+        self._async_updated_event(self.device)
+        # wait until player finishes to update state again
+        await self.device.wait_until_audio_completes()
 
         self._async_updated_event(self.device)
 
     async def async_browse_media(
-        self, media_content_type: str | None = None, media_content_id: str | None = None
+        self,
+        media_content_type: MediaType | str | None = None,
+        media_content_id: str | None = None,
     ) -> BrowseMedia:
         """Implement the websocket media browsing helper."""
         return await media_source.async_browse_media(

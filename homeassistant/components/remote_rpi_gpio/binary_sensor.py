@@ -11,6 +11,7 @@ import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
+from .. import remote_rpi_gpio
 from . import (
     CONF_BOUNCETIME,
     CONF_INVERT_LOGIC,
@@ -19,7 +20,6 @@ from . import (
     DEFAULT_INVERT_LOGIC,
     DEFAULT_PULL_MODE,
 )
-from .. import remote_rpi_gpio
 
 CONF_PORTS = "ports"
 
@@ -75,7 +75,7 @@ class RemoteRPiGPIOBinarySensor(BinarySensorEntity):
         self._state = False
         self._sensor = sensor
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
 
         def read_gpio():
@@ -101,7 +101,7 @@ class RemoteRPiGPIOBinarySensor(BinarySensorEntity):
         """Return the class of this sensor, from DEVICE_CLASSES."""
         return
 
-    def update(self):
+    def update(self) -> None:
         """Update the GPIO state."""
         try:
             self._state = remote_rpi_gpio.read_input(self._sensor)

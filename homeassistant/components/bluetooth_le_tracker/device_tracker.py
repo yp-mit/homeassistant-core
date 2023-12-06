@@ -12,10 +12,8 @@ import voluptuous as vol
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth.match import BluetoothCallbackMatcher
 from homeassistant.components.device_tracker import (
-    PLATFORM_SCHEMA as PARENT_PLATFORM_SCHEMA,
-)
-from homeassistant.components.device_tracker.const import (
     CONF_TRACK_NEW,
+    PLATFORM_SCHEMA as PARENT_PLATFORM_SCHEMA,
     SCAN_INTERVAL,
     SourceType,
 )
@@ -72,6 +70,7 @@ async def async_setup_scanner(  # noqa: C901
     yaml_path = hass.config.path(YAML_DEVICES)
     devs_to_track: set[str] = set()
     devs_no_track: set[str] = set()
+    devs_advertise_time: dict[str, float] = {}
     devs_track_battery = {}
     interval: timedelta = config.get(CONF_SCAN_INTERVAL, SCAN_INTERVAL)
     # if track new devices is true discover new devices
@@ -180,6 +179,7 @@ async def async_setup_scanner(  # noqa: C901
         """Update from a ble callback."""
         mac = service_info.address
         if mac in devs_to_track:
+            devs_advertise_time[mac] = service_info.time
             now = dt_util.utcnow()
             hass.async_create_task(async_see_device(mac, service_info.name))
             if (
@@ -187,8 +187,9 @@ async def async_setup_scanner(  # noqa: C901
                 and now > devs_track_battery[mac] + battery_track_interval
             ):
                 devs_track_battery[mac] = now
-                asyncio.create_task(
-                    _async_see_update_ble_battery(mac, now, service_info)
+                hass.async_create_background_task(
+                    _async_see_update_ble_battery(mac, now, service_info),
+                    "bluetooth_le_tracker.device_tracker-see_update_ble_battery",
                 )
 
         if track_new:
@@ -206,7 +207,9 @@ async def async_setup_scanner(  # noqa: C901
         # there have been no callbacks because the RSSI or
         # other properties have not changed.
         for service_info in bluetooth.async_discovered_service_info(hass, False):
-            _async_update_ble(service_info, bluetooth.BluetoothChange.ADVERTISEMENT)
+            # Only call _async_update_ble if the advertisement time has changed
+            if service_info.time != devs_advertise_time.get(service_info.address):
+                _async_update_ble(service_info, bluetooth.BluetoothChange.ADVERTISEMENT)
 
     cancels = [
         bluetooth.async_register_callback(

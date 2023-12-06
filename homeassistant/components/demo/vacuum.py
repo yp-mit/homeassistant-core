@@ -19,7 +19,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import event
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 SUPPORT_MINIMAL_SERVICES = VacuumEntityFeature.TURN_ON | VacuumEntityFeature.TURN_OFF
 
@@ -79,23 +78,13 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Demo config entry."""
-    await async_setup_platform(hass, {}, async_add_entities)
-
-
-async def async_setup_platform(
-    hass: HomeAssistant,
-    config: ConfigType,
-    async_add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None,
-) -> None:
-    """Set up the Demo vacuums."""
     async_add_entities(
         [
             DemoVacuum(DEMO_VACUUM_COMPLETE, SUPPORT_ALL_SERVICES),
             DemoVacuum(DEMO_VACUUM_MOST, SUPPORT_MOST_SERVICES),
             DemoVacuum(DEMO_VACUUM_BASIC, SUPPORT_BASIC_SERVICES),
             DemoVacuum(DEMO_VACUUM_MINIMAL, SUPPORT_MINIMAL_SERVICES),
-            DemoVacuum(DEMO_VACUUM_NONE, 0),
+            DemoVacuum(DEMO_VACUUM_NONE, VacuumEntityFeature(0)),
             StateDemoVacuum(DEMO_VACUUM_STATE),
         ]
     )
@@ -105,11 +94,12 @@ class DemoVacuum(VacuumEntity):
     """Representation of a demo vacuum."""
 
     _attr_should_poll = False
+    _attr_translation_key = "model_s"
 
-    def __init__(self, name: str, supported_features: int) -> None:
+    def __init__(self, name: str, supported_features: VacuumEntityFeature) -> None:
         """Initialize the vacuum."""
         self._attr_name = name
-        self._supported_features = supported_features
+        self._attr_supported_features = supported_features
         self._state = False
         self._status = "Charging"
         self._fan_speed = FAN_SPEEDS[1]
@@ -145,11 +135,6 @@ class DemoVacuum(VacuumEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return device state attributes."""
         return {ATTR_CLEANED_AREA: round(self._cleaned_area, 2)}
-
-    @property
-    def supported_features(self) -> int:
-        """Flag supported features."""
-        return self._supported_features
 
     def turn_on(self, **kwargs: Any) -> None:
         """Turn the vacuum on."""
@@ -251,20 +236,16 @@ class StateDemoVacuum(StateVacuumEntity):
     """Representation of a demo vacuum supporting states."""
 
     _attr_should_poll = False
+    _attr_supported_features = SUPPORT_STATE_SERVICES
+    _attr_translation_key = "model_s"
 
     def __init__(self, name: str) -> None:
         """Initialize the vacuum."""
         self._attr_name = name
-        self._supported_features = SUPPORT_STATE_SERVICES
         self._state = STATE_DOCKED
         self._fan_speed = FAN_SPEEDS[1]
         self._cleaned_area: float = 0
         self._battery_level = 100
-
-    @property
-    def supported_features(self) -> int:
-        """Flag supported features."""
-        return self._supported_features
 
     @property
     def state(self) -> str:

@@ -5,36 +5,29 @@ from collections.abc import Awaitable, Callable, Coroutine
 from functools import reduce, wraps
 import logging
 from operator import ior
-from typing import Any
+from typing import Any, ParamSpec
 
 from pyheos import HeosError, const as heos_const
-from typing_extensions import ParamSpec
 
 from homeassistant.components import media_source
 from homeassistant.components.media_player import (
+    ATTR_MEDIA_ENQUEUE,
+    DOMAIN,
+    BrowseMedia,
     MediaPlayerEnqueue,
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
-)
-from homeassistant.components.media_player.browse_media import (
-    BrowseMedia,
+    MediaPlayerState,
+    MediaType,
     async_process_play_media_url,
 )
-from homeassistant.components.media_player.const import (
-    ATTR_MEDIA_ENQUEUE,
-    DOMAIN,
-    MEDIA_TYPE_MUSIC,
-    MEDIA_TYPE_PLAYLIST,
-    MEDIA_TYPE_URL,
-)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_IDLE, STATE_PAUSED, STATE_PLAYING
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect,
     async_dispatcher_send,
 )
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util.dt import utcnow
 
@@ -59,12 +52,13 @@ BASE_SUPPORTED_FEATURES = (
     | MediaPlayerEntityFeature.PLAY_MEDIA
     | MediaPlayerEntityFeature.GROUPING
     | MediaPlayerEntityFeature.BROWSE_MEDIA
+    | MediaPlayerEntityFeature.MEDIA_ENQUEUE
 )
 
 PLAY_STATE_TO_STATE = {
-    heos_const.PLAY_STATE_PLAY: STATE_PLAYING,
-    heos_const.PLAY_STATE_STOP: STATE_IDLE,
-    heos_const.PLAY_STATE_PAUSE: STATE_PAUSED,
+    heos_const.PLAY_STATE_PLAY: MediaPlayerState.PLAYING,
+    heos_const.PLAY_STATE_STOP: MediaPlayerState.IDLE,
+    heos_const.PLAY_STATE_PAUSE: MediaPlayerState.PAUSED,
 }
 
 CONTROL_TO_SUPPORT = {
@@ -95,14 +89,14 @@ async def async_setup_entry(
     async_add_entities(devices, True)
 
 
-def log_command_error(
-    command: str,
-) -> Callable[[Callable[_P, Awaitable[Any]]], Callable[_P, Coroutine[Any, Any, None]]]:
+_FuncType = Callable[_P, Awaitable[Any]]
+_ReturnFuncType = Callable[_P, Coroutine[Any, Any, None]]
+
+
+def log_command_error(command: str) -> Callable[[_FuncType[_P]], _ReturnFuncType[_P]]:
     """Return decorator that logs command failure."""
 
-    def decorator(
-        func: Callable[_P, Awaitable[Any]]
-    ) -> Callable[_P, Coroutine[Any, Any, None]]:
+    def decorator(func: _FuncType[_P]) -> _ReturnFuncType[_P]:
         @wraps(func)
         async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> None:
             try:
@@ -118,16 +112,28 @@ def log_command_error(
 class HeosMediaPlayer(MediaPlayerEntity):
     """The HEOS player."""
 
+    _attr_media_content_type = MediaType.MUSIC
     _attr_should_poll = False
+    _attr_supported_features = BASE_SUPPORTED_FEATURES
+    _attr_media_image_remotely_accessible = True
+    _attr_has_entity_name = True
+    _attr_name = None
 
     def __init__(self, player):
         """Initialize."""
         self._media_position_updated_at = None
         self._player = player
         self._signals = []
-        self._attr_supported_features = BASE_SUPPORTED_FEATURES
         self._source_manager = None
         self._group_manager = None
+        self._attr_unique_id = str(player.player_id)
+        self._attr_device_info = DeviceInfo(
+            identifiers={(HEOS_DOMAIN, player.player_id)},
+            manufacturer="HEOS",
+            model=player.model,
+            name=player.name,
+            sw_version=player.version,
+        )
 
     async def _player_update(self, player_id, event):
         """Handle player attribute updated."""
@@ -201,17 +207,17 @@ class HeosMediaPlayer(MediaPlayerEntity):
 
     @log_command_error("play media")
     async def async_play_media(
-        self, media_type: str, media_id: str, **kwargs: Any
+        self, media_type: MediaType | str, media_id: str, **kwargs: Any
     ) -> None:
         """Play a piece of media."""
         if media_source.is_media_source_id(media_id):
-            media_type = MEDIA_TYPE_URL
+            media_type = MediaType.URL
             play_item = await media_source.async_resolve_media(
                 self.hass, media_id, self.entity_id
             )
             media_id = play_item.url
 
-        if media_type in (MEDIA_TYPE_URL, MEDIA_TYPE_MUSIC):
+        if media_type in {MediaType.URL, MediaType.MUSIC}:
             media_id = async_process_play_media_url(self.hass, media_id)
 
             await self._player.play_url(media_id)
@@ -233,7 +239,7 @@ class HeosMediaPlayer(MediaPlayerEntity):
             await self._player.play_quick_select(index)
             return
 
-        if media_type == MEDIA_TYPE_PLAYLIST:
+        if media_type == MediaType.PLAYLIST:
             playlists = await self._player.heos.get_playlists()
             playlist = next((p for p in playlists if p.name == media_id), None)
             if not playlist:
@@ -310,17 +316,6 @@ class HeosMediaPlayer(MediaPlayerEntity):
         return self._player.available
 
     @property
-    def device_info(self) -> DeviceInfo:
-        """Get attributes about the device."""
-        return DeviceInfo(
-            identifiers={(HEOS_DOMAIN, self._player.player_id)},
-            manufacturer="HEOS",
-            model=self._player.model,
-            name=self._player.name,
-            sw_version=self._player.version,
-        )
-
-    @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Get additional attribute about the state."""
         return {
@@ -357,11 +352,6 @@ class HeosMediaPlayer(MediaPlayerEntity):
         return self._player.now_playing_media.media_id
 
     @property
-    def media_content_type(self) -> str:
-        """Content type of current playing media."""
-        return MEDIA_TYPE_MUSIC
-
-    @property
     def media_duration(self):
         """Duration of current playing media in seconds."""
         duration = self._player.now_playing_media.duration
@@ -386,11 +376,6 @@ class HeosMediaPlayer(MediaPlayerEntity):
         return self._media_position_updated_at
 
     @property
-    def media_image_remotely_accessible(self) -> bool:
-        """If the image url is remotely accessible."""
-        return True
-
-    @property
     def media_image_url(self) -> str:
         """Image url of current playing media."""
         # May be an empty string, if so, return None
@@ -401,11 +386,6 @@ class HeosMediaPlayer(MediaPlayerEntity):
     def media_title(self) -> str:
         """Title of current playing media."""
         return self._player.now_playing_media.song
-
-    @property
-    def name(self) -> str:
-        """Return the name of the device."""
-        return self._player.name
 
     @property
     def shuffle(self) -> bool:
@@ -423,14 +403,9 @@ class HeosMediaPlayer(MediaPlayerEntity):
         return self._source_manager.source_list
 
     @property
-    def state(self) -> str:
+    def state(self) -> MediaPlayerState:
         """State of the player."""
         return PLAY_STATE_TO_STATE[self._player.state]
-
-    @property
-    def unique_id(self) -> str:
-        """Return a unique ID."""
-        return str(self._player.player_id)
 
     @property
     def volume_level(self) -> float:
@@ -438,7 +413,9 @@ class HeosMediaPlayer(MediaPlayerEntity):
         return self._player.volume / 100
 
     async def async_browse_media(
-        self, media_content_type: str | None = None, media_content_id: str | None = None
+        self,
+        media_content_type: MediaType | str | None = None,
+        media_content_id: str | None = None,
     ) -> BrowseMedia:
         """Implement the websocket media browsing helper."""
         return await media_source.async_browse_media(

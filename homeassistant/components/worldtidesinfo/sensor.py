@@ -110,13 +110,13 @@ class WorldTidesInfoSensor(SensorEntity):
             return None
         return None
 
-    def update(self):
+    def update(self) -> None:
         """Get the latest data from WorldTidesInfo API."""
         start = int(time.time())
         resource = (
             "https://www.worldtides.info/api?extremes&length=86400"
-            "&key={}&lat={}&lon={}&start={}"
-        ).format(self._key, self._lat, self._lon, start)
+            f"&key={self._key}&lat={self._lat}&lon={self._lon}&start={start}"
+        )
 
         try:
             self.data = requests.get(resource, timeout=10).json()

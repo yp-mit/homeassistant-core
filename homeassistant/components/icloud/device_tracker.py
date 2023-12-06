@@ -3,14 +3,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.components.device_tracker import AsyncSeeCallback, SourceType
-from homeassistant.components.device_tracker.config_entry import TrackerEntity
+from homeassistant.components.device_tracker import SourceType, TrackerEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 from .account import IcloudAccount, IcloudDevice
 from .const import (
@@ -19,15 +17,6 @@ from .const import (
     DEVICE_LOCATION_LONGITUDE,
     DOMAIN,
 )
-
-
-async def async_setup_scanner(
-    hass: HomeAssistant,
-    config: ConfigType,
-    async_see: AsyncSeeCallback,
-    discovery_info: DiscoveryInfoType | None = None,
-) -> bool:
-    """Old way of setting up the iCloud tracker."""
 
 
 async def async_setup_entry(
@@ -61,28 +50,21 @@ def add_entities(account: IcloudAccount, async_add_entities, tracked):
         new_tracked.append(IcloudTrackerEntity(account, device))
         tracked.add(dev_id)
 
-    if new_tracked:
-        async_add_entities(new_tracked, True)
+    async_add_entities(new_tracked, True)
 
 
 class IcloudTrackerEntity(TrackerEntity):
     """Represent a tracked device."""
+
+    _attr_has_entity_name = True
+    _attr_name = None
 
     def __init__(self, account: IcloudAccount, device: IcloudDevice) -> None:
         """Set up the iCloud tracker entity."""
         self._account = account
         self._device = device
         self._unsub_dispatcher: CALLBACK_TYPE | None = None
-
-    @property
-    def unique_id(self) -> str:
-        """Return a unique ID."""
-        return self._device.unique_id
-
-    @property
-    def name(self) -> str:
-        """Return the name of the device."""
-        return self._device.name
+        self._attr_unique_id = device.unique_id
 
     @property
     def location_accuracy(self):

@@ -1,13 +1,12 @@
 """Provide functionality to interact with Cast devices on the network."""
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pychromecast
 from pychromecast.controllers.homeassistant import HomeAssistantController
@@ -24,40 +23,31 @@ from pychromecast.socket_client import (
     CONNECTION_STATUS_CONNECTED,
     CONNECTION_STATUS_DISCONNECTED,
 )
-import voluptuous as vol
 import yarl
 
 from homeassistant.components import media_source, zeroconf
 from homeassistant.components.media_player import (
+    ATTR_MEDIA_EXTRA,
     BrowseError,
     BrowseMedia,
+    MediaClass,
     MediaPlayerDeviceClass,
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
+    MediaPlayerState,
+    MediaType,
     async_process_play_media_url,
-)
-from homeassistant.components.media_player.const import (
-    ATTR_MEDIA_EXTRA,
-    MEDIA_CLASS_DIRECTORY,
-    MEDIA_TYPE_MOVIE,
-    MEDIA_TYPE_MUSIC,
-    MEDIA_TYPE_TVSHOW,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CAST_APP_ID_HOMEASSISTANT_LOVELACE,
+    CONF_UUID,
     EVENT_HOMEASSISTANT_STOP,
-    STATE_BUFFERING,
-    STATE_IDLE,
-    STATE_OFF,
-    STATE_PAUSED,
-    STATE_PLAYING,
 )
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.network import NoURLAvailableError, get_url, is_hass_url
 import homeassistant.util.dt as dt_util
@@ -67,7 +57,6 @@ from .const import (
     ADDED_CAST_DEVICES_KEY,
     CAST_MULTIZONE_MANAGER_KEY,
     CONF_IGNORE_CEC,
-    CONF_UUID,
     DOMAIN as CAST_DOMAIN,
     SIGNAL_CAST_DISCOVERED,
     SIGNAL_CAST_REMOVED,
@@ -83,20 +72,14 @@ from .helpers import (
     parse_playlist,
 )
 
+if TYPE_CHECKING:
+    from . import CastProtocol
+
 _LOGGER = logging.getLogger(__name__)
 
 APP_IDS_UNRELIABLE_MEDIA_INFO = ("Netflix",)
 
 CAST_SPLASH = "https://www.home-assistant.io/images/cast/splash.png"
-
-ENTITY_SCHEMA = vol.All(
-    vol.Schema(
-        {
-            vol.Optional(CONF_UUID): cv.string,
-            vol.Optional(CONF_IGNORE_CEC): vol.All(cv.ensure_list, [cv.string]),
-        }
-    ),
-)
 
 
 @callback
@@ -191,10 +174,11 @@ class CastDevice:
             self.hass, SIGNAL_CAST_REMOVED, self._async_cast_removed
         )
         self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self._async_stop)
-        # asyncio.create_task is used to avoid delaying startup wrapup if the device
+        # async_create_background_task is used to avoid delaying startup wrapup if the device
         # is discovered already during startup but then fails to respond
-        asyncio.create_task(
-            async_create_catching_coro(self._async_connect_to_chromecast())
+        self.hass.async_create_background_task(
+            async_create_catching_coro(self._async_connect_to_chromecast()),
+            "cast-connect",
         )
 
     async def _async_tear_down(self) -> None:
@@ -283,6 +267,7 @@ class CastMediaPlayerEntity(CastDevice, MediaPlayerEntity):
     """Representation of a Cast device on the network."""
 
     _attr_has_entity_name = True
+    _attr_name = None
     _attr_should_poll = False
     _attr_media_image_remotely_accessible = True
     _mz_only = False
@@ -377,15 +362,7 @@ class CastMediaPlayerEntity(CastDevice, MediaPlayerEntity):
         ):
             external_url = None
             internal_url = None
-            tts_base_url = None
             url_description = ""
-            if "tts" in self.hass.config.components:
-                # pylint: disable=[import-outside-toplevel]
-                from homeassistant.components import tts
-
-                with suppress(KeyError):  # base_url not configured
-                    tts_base_url = tts.get_base_url(self.hass)
-
             with suppress(NoURLAvailableError):  # external_url not configured
                 external_url = get_url(self.hass, allow_internal=False)
 
@@ -393,17 +370,17 @@ class CastMediaPlayerEntity(CastDevice, MediaPlayerEntity):
                 internal_url = get_url(self.hass, allow_external=False)
 
             if media_status.content_id:
-                if tts_base_url and media_status.content_id.startswith(tts_base_url):
-                    url_description = f" from tts.base_url ({tts_base_url})"
                 if external_url and media_status.content_id.startswith(external_url):
                     url_description = f" from external_url ({external_url})"
                 if internal_url and media_status.content_id.startswith(internal_url):
                     url_description = f" from internal_url ({internal_url})"
 
             _LOGGER.error(
-                "Failed to cast media %s%s. Please make sure the URL is: "
-                "Reachable from the cast device and either a publicly resolvable "
-                "hostname or an IP address",
+                (
+                    "Failed to cast media %s%s. Please make sure the URL is: "
+                    "Reachable from the cast device and either a publicly resolvable "
+                    "hostname or an IP address"
+                ),
                 media_status.content_id,
                 url_description,
             )
@@ -479,8 +456,7 @@ class CastMediaPlayerEntity(CastDevice, MediaPlayerEntity):
 
     # ========== Service Calls ==========
     def _media_controller(self):
-        """
-        Return media controller.
+        """Return media controller.
 
         First try from our own cast, then groups which our cast is a member in.
         """
@@ -590,7 +566,7 @@ class CastMediaPlayerEntity(CastDevice, MediaPlayerEntity):
 
         return BrowseMedia(
             title="Cast",
-            media_class=MEDIA_CLASS_DIRECTORY,
+            media_class=MediaClass.DIRECTORY,
             media_content_id="",
             media_content_type="",
             can_play=False,
@@ -599,7 +575,9 @@ class CastMediaPlayerEntity(CastDevice, MediaPlayerEntity):
         )
 
     async def async_browse_media(
-        self, media_content_type: str | None = None, media_content_id: str | None = None
+        self,
+        media_content_type: MediaType | str | None = None,
+        media_content_id: str | None = None,
     ) -> BrowseMedia:
         """Implement the websocket media browsing helper."""
         content_filter = None
@@ -619,6 +597,8 @@ class CastMediaPlayerEntity(CastDevice, MediaPlayerEntity):
         if media_content_id is None:
             return await self._async_root_payload(content_filter)
 
+        platform: CastProtocol
+        assert media_content_type is not None
         for platform in self.hass.data[CAST_DOMAIN]["cast_platform"].values():
             browse_media = await platform.async_browse_media(
                 self.hass,
@@ -634,7 +614,7 @@ class CastMediaPlayerEntity(CastDevice, MediaPlayerEntity):
         )
 
     async def async_play_media(
-        self, media_type: str, media_id: str, **kwargs: Any
+        self, media_type: MediaType | str, media_id: str, **kwargs: Any
     ) -> None:
         """Play a piece of media."""
         chromecast = self._get_chromecast()
@@ -752,8 +732,7 @@ class CastMediaPlayerEntity(CastDevice, MediaPlayerEntity):
         )
 
     def _media_status(self):
-        """
-        Return media status.
+        """Return media status.
 
         First try from our own cast, then groups which our cast is a member in.
         """
@@ -774,27 +753,27 @@ class CastMediaPlayerEntity(CastDevice, MediaPlayerEntity):
         return (media_status, media_status_received)
 
     @property
-    def state(self) -> str | None:
+    def state(self) -> MediaPlayerState | None:
         """Return the state of the player."""
         # The lovelace app loops media to prevent timing out, don't show that
         if self.app_id == CAST_APP_ID_HOMEASSISTANT_LOVELACE:
-            return STATE_PLAYING
+            return MediaPlayerState.PLAYING
         if (media_status := self._media_status()[0]) is not None:
             if media_status.player_state == MEDIA_PLAYER_STATE_PLAYING:
-                return STATE_PLAYING
+                return MediaPlayerState.PLAYING
             if media_status.player_state == MEDIA_PLAYER_STATE_BUFFERING:
-                return STATE_BUFFERING
+                return MediaPlayerState.BUFFERING
             if media_status.player_is_paused:
-                return STATE_PAUSED
+                return MediaPlayerState.PAUSED
             if media_status.player_is_idle:
-                return STATE_IDLE
+                return MediaPlayerState.IDLE
         if self.app_id is not None and self.app_id != pychromecast.IDLE_APP_ID:
             if self.app_id in APP_IDS_UNRELIABLE_MEDIA_INFO:
                 # Some apps don't report media status, show the player as playing
-                return STATE_PLAYING
-            return STATE_IDLE
+                return MediaPlayerState.PLAYING
+            return MediaPlayerState.IDLE
         if self._chromecast is not None and self._chromecast.is_idle:
-            return STATE_OFF
+            return MediaPlayerState.OFF
         return None
 
     @property
@@ -807,7 +786,7 @@ class CastMediaPlayerEntity(CastDevice, MediaPlayerEntity):
         return media_status.content_id if media_status else None
 
     @property
-    def media_content_type(self) -> str | None:
+    def media_content_type(self) -> MediaType | None:
         """Content type of current playing media."""
         # The lovelace app loops media to prevent timing out, don't show that
         if self.app_id == CAST_APP_ID_HOMEASSISTANT_LOVELACE:
@@ -815,12 +794,20 @@ class CastMediaPlayerEntity(CastDevice, MediaPlayerEntity):
         if (media_status := self._media_status()[0]) is None:
             return None
         if media_status.media_is_tvshow:
-            return MEDIA_TYPE_TVSHOW
+            return MediaType.TVSHOW
         if media_status.media_is_movie:
-            return MEDIA_TYPE_MOVIE
+            return MediaType.MOVIE
         if media_status.media_is_musictrack:
-            return MEDIA_TYPE_MUSIC
-        return None
+            return MediaType.MUSIC
+
+        chromecast = self._get_chromecast()
+        if chromecast.cast_type in (
+            pychromecast.const.CAST_TYPE_AUDIO,
+            pychromecast.const.CAST_TYPE_GROUP,
+        ):
+            return MediaType.MUSIC
+
+        return MediaType.VIDEO
 
     @property
     def media_duration(self):
@@ -900,7 +887,7 @@ class CastMediaPlayerEntity(CastDevice, MediaPlayerEntity):
         return self._chromecast.app_display_name if self._chromecast else None
 
     @property
-    def supported_features(self):
+    def supported_features(self) -> MediaPlayerEntityFeature:
         """Flag media player features that are supported."""
         support = (
             MediaPlayerEntityFeature.PLAY_MEDIA

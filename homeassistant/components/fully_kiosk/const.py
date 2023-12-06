@@ -5,7 +5,7 @@ from datetime import timedelta
 import logging
 from typing import Final
 
-from homeassistant.components.media_player.const import MediaPlayerEntityFeature
+from homeassistant.components.media_player import MediaPlayerEntityFeature
 
 DOMAIN: Final = "fully_kiosk"
 
@@ -22,3 +22,12 @@ MEDIA_SUPPORT_FULLYKIOSK = (
     | MediaPlayerEntityFeature.VOLUME_SET
     | MediaPlayerEntityFeature.BROWSE_MEDIA
 )
+
+SERVICE_LOAD_URL = "load_url"
+SERVICE_START_APPLICATION = "start_application"
+SERVICE_SET_CONFIG = "set_config"
+
+ATTR_URL = "url"
+ATTR_APPLICATION = "application"
+ATTR_KEY = "key"
+ATTR_VALUE = "value"

@@ -1,8 +1,8 @@
 """Support to interface with Sonos players."""
 from __future__ import annotations
 
-from asyncio import run_coroutine_threadsafe
 import datetime
+from functools import partial
 import logging
 from typing import Any
 
@@ -14,31 +14,28 @@ from soco.core import (
     PLAY_MODES,
 )
 from soco.data_structures import DidlFavorite
+from sonos_websocket.exception import SonosWebsocketError
 import voluptuous as vol
 
 from homeassistant.components import media_source, spotify
 from homeassistant.components.media_player import (
+    ATTR_INPUT_SOURCE,
+    ATTR_MEDIA_ANNOUNCE,
+    ATTR_MEDIA_ENQUEUE,
+    BrowseMedia,
+    MediaPlayerDeviceClass,
     MediaPlayerEnqueue,
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
+    MediaPlayerState,
+    MediaType,
+    RepeatMode,
     async_process_play_media_url,
 )
-from homeassistant.components.media_player.const import (
-    ATTR_INPUT_SOURCE,
-    ATTR_MEDIA_ENQUEUE,
-    MEDIA_TYPE_ALBUM,
-    MEDIA_TYPE_ARTIST,
-    MEDIA_TYPE_MUSIC,
-    MEDIA_TYPE_PLAYLIST,
-    MEDIA_TYPE_TRACK,
-    REPEAT_MODE_ALL,
-    REPEAT_MODE_OFF,
-    REPEAT_MODE_ONE,
-)
-from homeassistant.components.plex.const import PLEX_URI_SCHEME
+from homeassistant.components.plex import PLEX_URI_SCHEME
 from homeassistant.components.plex.services import process_plex_payload
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_TIME, STATE_IDLE, STATE_PAUSED, STATE_PLAYING
+from homeassistant.const import ATTR_TIME
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv, entity_platform, service
@@ -73,9 +70,9 @@ UNJOIN_SERVICE_TIMEOUT = 0.1
 VOLUME_INCREMENT = 2
 
 REPEAT_TO_SONOS = {
-    REPEAT_MODE_OFF: False,
-    REPEAT_MODE_ALL: True,
-    REPEAT_MODE_ONE: "ONE",
+    RepeatMode.OFF: False,
+    RepeatMode.ALL: True,
+    RepeatMode.ONE: "ONE",
 }
 
 SONOS_TO_REPEAT = {meaning: mode for mode, meaning in REPEAT_TO_SONOS.items()}
@@ -193,10 +190,13 @@ async def async_setup_entry(
 class SonosMediaPlayerEntity(SonosEntity, MediaPlayerEntity):
     """Representation of a Sonos entity."""
 
+    _attr_name = None
     _attr_supported_features = (
         MediaPlayerEntityFeature.BROWSE_MEDIA
         | MediaPlayerEntityFeature.CLEAR_PLAYLIST
         | MediaPlayerEntityFeature.GROUPING
+        | MediaPlayerEntityFeature.MEDIA_ANNOUNCE
+        | MediaPlayerEntityFeature.MEDIA_ENQUEUE
         | MediaPlayerEntityFeature.NEXT_TRACK
         | MediaPlayerEntityFeature.PAUSE
         | MediaPlayerEntityFeature.PLAY
@@ -210,7 +210,8 @@ class SonosMediaPlayerEntity(SonosEntity, MediaPlayerEntity):
         | MediaPlayerEntityFeature.VOLUME_MUTE
         | MediaPlayerEntityFeature.VOLUME_SET
     )
-    _attr_media_content_type = MEDIA_TYPE_MUSIC
+    _attr_media_content_type = MediaType.MUSIC
+    _attr_device_class = MediaPlayerDeviceClass.SPEAKER
 
     def __init__(self, speaker: SonosSpeaker) -> None:
         """Initialize the media player entity."""
@@ -258,23 +259,24 @@ class SonosMediaPlayerEntity(SonosEntity, MediaPlayerEntity):
         return hash(self.unique_id)
 
     @property
-    def state(self) -> str:
+    def state(self) -> MediaPlayerState:
         """Return the state of the entity."""
         if self.media.playback_status in (
             "PAUSED_PLAYBACK",
             "STOPPED",
         ):
             # Sonos can consider itself "paused" but without having media loaded
-            # (happens if playing Spotify and via Spotify app you pick another device to play on)
+            # (happens if playing Spotify and via Spotify app
+            # you pick another device to play on)
             if self.media.title is None:
-                return STATE_IDLE
-            return STATE_PAUSED
+                return MediaPlayerState.IDLE
+            return MediaPlayerState.PAUSED
         if self.media.playback_status in (
             SONOS_STATE_PLAYING,
             SONOS_STATE_TRANSITIONING,
         ):
-            return STATE_PLAYING
-        return STATE_IDLE
+            return MediaPlayerState.PLAYING
+        return MediaPlayerState.IDLE
 
     async def _async_fallback_poll(self) -> None:
         """Retrieve latest state by polling."""
@@ -306,7 +308,7 @@ class SonosMediaPlayerEntity(SonosEntity, MediaPlayerEntity):
         return PLAY_MODES[self.media.play_mode][0]
 
     @property
-    def repeat(self) -> str | None:
+    def repeat(self) -> RepeatMode | None:
         """Return current repeat mode."""
         sonos_repeat = PLAY_MODES[self.media.play_mode][1]
         return SONOS_TO_REPEAT[sonos_repeat]
@@ -329,7 +331,7 @@ class SonosMediaPlayerEntity(SonosEntity, MediaPlayerEntity):
     @property
     def media_position(self) -> int | None:
         """Position of current playing media in seconds."""
-        return int(self.media.position) if self.media.position else None
+        return self.media.position
 
     @property
     def media_position_updated_at(self) -> datetime.datetime | None:
@@ -396,7 +398,7 @@ class SonosMediaPlayerEntity(SonosEntity, MediaPlayerEntity):
         ]
 
     @soco_error(UPNP_ERRORS_TO_IGNORE)
-    def set_repeat(self, repeat: str) -> None:
+    def set_repeat(self, repeat: RepeatMode) -> None:
         """Set repeat mode."""
         sonos_shuffle = PLAY_MODES[self.media.play_mode][0]
         sonos_repeat = REPEAT_TO_SONOS[repeat]
@@ -444,7 +446,7 @@ class SonosMediaPlayerEntity(SonosEntity, MediaPlayerEntity):
             soco.play_uri(uri, title=favorite.title)
         else:
             soco.clear_queue()
-            soco.add_to_queue(favorite.reference)
+            soco.add_to_queue(favorite.reference, timeout=LONG_SERVICE_TIMEOUT)
             soco.play_from_queue(0)
 
     @property
@@ -494,12 +496,10 @@ class SonosMediaPlayerEntity(SonosEntity, MediaPlayerEntity):
         """Clear players playlist."""
         self.coordinator.soco.clear_queue()
 
-    @soco_error()
-    def play_media(  # noqa: C901
-        self, media_type: str, media_id: str, **kwargs: Any
+    async def async_play_media(
+        self, media_type: MediaType | str, media_id: str, **kwargs: Any
     ) -> None:
-        """
-        Send the play_media command to the media player.
+        """Send the play_media command to the media player.
 
         If media_id is a Plex payload, attempt Plex->Sonos playback.
 
@@ -509,28 +509,46 @@ class SonosMediaPlayerEntity(SonosEntity, MediaPlayerEntity):
         If media_type is "playlist", media_id should be a Sonos
         Playlist name.  Otherwise, media_id should be a URI.
         """
-        # Use 'replace' as the default enqueue option
-        enqueue = kwargs.get(ATTR_MEDIA_ENQUEUE, MediaPlayerEnqueue.REPLACE)
+        is_radio = False
+
+        if media_source.is_media_source_id(media_id):
+            is_radio = media_id.startswith("media-source://radio_browser/")
+            media_type = MediaType.MUSIC
+            media = await media_source.async_resolve_media(
+                self.hass, media_id, self.entity_id
+            )
+            media_id = async_process_play_media_url(self.hass, media.url)
+
+        if kwargs.get(ATTR_MEDIA_ANNOUNCE):
+            volume = kwargs.get("extra", {}).get("volume")
+            _LOGGER.debug("Playing %s using websocket audioclip", media_id)
+            try:
+                assert self.speaker.websocket
+                response, _ = await self.speaker.websocket.play_clip(
+                    async_process_play_media_url(self.hass, media_id),
+                    volume=volume,
+                )
+            except SonosWebsocketError as exc:
+                raise HomeAssistantError(
+                    f"Error when calling Sonos websocket: {exc}"
+                ) from exc
+            if response["success"]:
+                return
 
         if spotify.is_spotify_media_type(media_type):
             media_type = spotify.resolve_spotify_media_type(media_type)
             media_id = spotify.spotify_uri_from_media_browser_url(media_id)
 
-        is_radio = False
+        await self.hass.async_add_executor_job(
+            partial(self._play_media, media_type, media_id, is_radio, **kwargs)
+        )
 
-        if media_source.is_media_source_id(media_id):
-            is_radio = media_id.startswith("media-source://radio_browser/")
-            media_type = MEDIA_TYPE_MUSIC
-            media_id = (
-                run_coroutine_threadsafe(
-                    media_source.async_resolve_media(
-                        self.hass, media_id, self.entity_id
-                    ),
-                    self.hass.loop,
-                )
-                .result()
-                .url
-            )
+    @soco_error()
+    def _play_media(
+        self, media_type: MediaType | str, media_id: str, is_radio: bool, **kwargs: Any
+    ) -> None:
+        """Wrap sync calls to async_play_media."""
+        enqueue = kwargs.get(ATTR_MEDIA_ENQUEUE, MediaPlayerEnqueue.REPLACE)
 
         if media_type == "favorite_item_id":
             favorite = self.speaker.favorites.lookup_by_item_id(media_id)
@@ -587,35 +605,37 @@ class SonosMediaPlayerEntity(SonosEntity, MediaPlayerEntity):
                     media_id, timeout=LONG_SERVICE_TIMEOUT
                 )
                 soco.play_from_queue(0)
-        elif media_type in (MEDIA_TYPE_MUSIC, MEDIA_TYPE_TRACK):
+        elif media_type in {MediaType.MUSIC, MediaType.TRACK}:
             # If media ID is a relative URL, we serve it from HA.
             media_id = async_process_play_media_url(self.hass, media_id)
 
             if enqueue == MediaPlayerEnqueue.ADD:
-                soco.add_uri_to_queue(media_id)
+                soco.add_uri_to_queue(media_id, timeout=LONG_SERVICE_TIMEOUT)
             elif enqueue in (
                 MediaPlayerEnqueue.NEXT,
                 MediaPlayerEnqueue.PLAY,
             ):
                 pos = (self.media.queue_position or 0) + 1
-                new_pos = soco.add_uri_to_queue(media_id, position=pos)
+                new_pos = soco.add_uri_to_queue(
+                    media_id, position=pos, timeout=LONG_SERVICE_TIMEOUT
+                )
                 if enqueue == MediaPlayerEnqueue.PLAY:
                     soco.play_from_queue(new_pos - 1)
             elif enqueue == MediaPlayerEnqueue.REPLACE:
                 soco.play_uri(media_id, force_radio=is_radio)
-        elif media_type == MEDIA_TYPE_PLAYLIST:
+        elif media_type == MediaType.PLAYLIST:
             if media_id.startswith("S:"):
                 item = media_browser.get_media(self.media.library, media_id, media_type)
                 soco.play_uri(item.get_uri())
                 return
             try:
-                playlists = soco.get_sonos_playlists()
+                playlists = soco.get_sonos_playlists(complete_result=True)
                 playlist = next(p for p in playlists if p.title == media_id)
             except StopIteration:
                 _LOGGER.error('Could not find a Sonos playlist named "%s"', media_id)
             else:
                 soco.clear_queue()
-                soco.add_to_queue(playlist)
+                soco.add_to_queue(playlist, timeout=LONG_SERVICE_TIMEOUT)
                 soco.play_from_queue(0)
         elif media_type in PLAYABLE_MEDIA_TYPES:
             item = media_browser.get_media(self.media.library, media_id, media_type)
@@ -693,13 +713,13 @@ class SonosMediaPlayerEntity(SonosEntity, MediaPlayerEntity):
 
     async def async_get_browse_image(
         self,
-        media_content_type: str,
+        media_content_type: MediaType | str,
         media_content_id: str,
         media_image_id: str | None = None,
     ) -> tuple[bytes | None, str | None]:
         """Fetch media browser image to serve via proxy."""
         if (
-            media_content_type in [MEDIA_TYPE_ALBUM, MEDIA_TYPE_ARTIST]
+            media_content_type in {MediaType.ALBUM, MediaType.ARTIST}
             and media_content_id
         ):
             item = await self.hass.async_add_executor_job(
@@ -714,8 +734,10 @@ class SonosMediaPlayerEntity(SonosEntity, MediaPlayerEntity):
         return (None, None)
 
     async def async_browse_media(
-        self, media_content_type: str | None = None, media_content_id: str | None = None
-    ) -> Any:
+        self,
+        media_content_type: MediaType | str | None = None,
+        media_content_id: str | None = None,
+    ) -> BrowseMedia:
         """Implement the websocket media browsing helper."""
         return await media_browser.async_browse_media(
             self.hass,

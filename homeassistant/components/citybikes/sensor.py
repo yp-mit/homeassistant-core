@@ -6,7 +6,6 @@ from datetime import timedelta
 import logging
 
 import aiohttp
-import async_timeout
 import voluptuous as vol
 
 from homeassistant.components.sensor import (
@@ -24,8 +23,7 @@ from homeassistant.const import (
     CONF_LONGITUDE,
     CONF_NAME,
     CONF_RADIUS,
-    LENGTH_FEET,
-    LENGTH_METERS,
+    UnitOfLength,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import PlatformNotReady
@@ -35,7 +33,9 @@ from homeassistant.helpers.entity import async_generate_entity_id
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-from homeassistant.util import distance, location
+from homeassistant.util import location
+from homeassistant.util.unit_conversion import DistanceConverter
+from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -139,7 +139,7 @@ async def async_citybikes_request(hass, uri, schema):
     try:
         session = async_get_clientsession(hass)
 
-        async with async_timeout.timeout(REQUEST_TIMEOUT):
+        async with asyncio.timeout(REQUEST_TIMEOUT):
             req = await session.get(DEFAULT_ENDPOINT.format(uri=uri))
 
         json_response = await req.json()
@@ -169,8 +169,10 @@ async def async_setup_platform(
     stations_list = set(config.get(CONF_STATIONS_LIST, []))
     radius = config.get(CONF_RADIUS, 0)
     name = config[CONF_NAME]
-    if not hass.config.units.is_metric:
-        radius = distance.convert(radius, LENGTH_FEET, LENGTH_METERS)
+    if hass.config.units is US_CUSTOMARY_SYSTEM:
+        radius = DistanceConverter.convert(
+            radius, UnitOfLength.FEET, UnitOfLength.METERS
+        )
 
     # Create a single instance of CityBikesNetworks.
     networks = hass.data.setdefault(CITYBIKES_NETWORKS, CityBikesNetworks(hass))

@@ -187,6 +187,7 @@ class MiroboVacuum(
 ):
     """Representation of a Xiaomi Vacuum cleaner robot."""
 
+    _attr_name = None
     _attr_supported_features = (
         VacuumEntityFeature.STATE
         | VacuumEntityFeature.PAUSE
@@ -206,7 +207,7 @@ class MiroboVacuum(
         entry,
         unique_id,
         coordinator: DataUpdateCoordinator[VacuumCoordinatorData],
-    ):
+    ) -> None:
         """Initialize the Xiaomi vacuum cleaner robot handler."""
         super().__init__(device, entry, unique_id, coordinator)
         self._state: str | None = None
@@ -331,7 +332,10 @@ class MiroboVacuum(
         await self._try_command("Unable to locate the botvac: %s", self._device.find)
 
     async def async_send_command(
-        self, command: str, params: dict | list | None = None, **kwargs: Any
+        self,
+        command: str,
+        params: dict[str, Any] | list[Any] | None = None,
+        **kwargs: Any,
     ) -> None:
         """Send raw command."""
         await self._try_command(

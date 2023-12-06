@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 import logging
+from typing import Self
 
 import voluptuous as vol
 
@@ -20,9 +21,6 @@ from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.helpers import collection
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_component import EntityComponent
-from homeassistant.helpers.integration_platform import (
-    async_process_integration_platform_for_component,
-)
 from homeassistant.helpers.restore_state import RestoreEntity
 import homeassistant.helpers.service
 from homeassistant.helpers.storage import Store
@@ -107,11 +105,7 @@ STORAGE_VERSION = 1
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up an input slider."""
-    component = EntityComponent(_LOGGER, DOMAIN, hass)
-
-    # Process integration platforms right away since
-    # we will create entities before firing EVENT_COMPONENT_LOADED
-    await async_process_integration_platform_for_component(hass, DOMAIN)
+    component = EntityComponent[InputNumber](_LOGGER, DOMAIN, hass)
 
     id_manager = collection.IDManager()
 
@@ -119,12 +113,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         logging.getLogger(f"{__name__}.yaml_collection"), id_manager
     )
     collection.sync_entity_lifecycle(
-        hass, DOMAIN, DOMAIN, component, yaml_collection, InputNumber.from_yaml
+        hass, DOMAIN, DOMAIN, component, yaml_collection, InputNumber
     )
 
     storage_collection = NumberStorageCollection(
         Store(hass, STORAGE_VERSION, STORAGE_KEY),
-        logging.getLogger(f"{__name__}.storage_collection"),
         id_manager,
     )
     collection.sync_entity_lifecycle(
@@ -136,7 +129,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     )
     await storage_collection.async_load()
 
-    collection.StorageCollectionWebsocket(
+    collection.DictStorageCollectionWebsocket(
         storage_collection, DOMAIN, DOMAIN, STORAGE_FIELDS, STORAGE_FIELDS
     ).async_setup(hass)
 
@@ -170,7 +163,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
-class NumberStorageCollection(collection.StorageCollection):
+class NumberStorageCollection(collection.DictStorageCollection):
     """Input storage based collection."""
 
     SCHEMA = vol.Schema(vol.All(STORAGE_FIELDS, _cv_input_number))
@@ -184,7 +177,7 @@ class NumberStorageCollection(collection.StorageCollection):
         """Suggest an ID based on the config."""
         return info[CONF_NAME]
 
-    async def _async_load_data(self) -> dict | None:
+    async def _async_load_data(self) -> collection.SerializedStorageCollection | None:
         """Load the data.
 
         A past bug caused frontend to add initial value to all input numbers.
@@ -200,26 +193,37 @@ class NumberStorageCollection(collection.StorageCollection):
 
         return data
 
-    async def _update_data(self, data: dict, update_data: dict) -> dict:
+    async def _update_data(self, item: dict, update_data: dict) -> dict:
         """Return a new updated data object."""
         update_data = self.SCHEMA(update_data)
-        return {CONF_ID: data[CONF_ID]} | update_data
+        return {CONF_ID: item[CONF_ID]} | update_data
 
 
-class InputNumber(RestoreEntity):
+class InputNumber(collection.CollectionEntity, RestoreEntity):
     """Representation of a slider."""
 
-    _attr_should_poll = False
+    _unrecorded_attributes = frozenset(
+        {ATTR_EDITABLE, ATTR_MAX, ATTR_MIN, ATTR_MODE, ATTR_STEP}
+    )
 
-    def __init__(self, config: dict) -> None:
+    _attr_should_poll = False
+    editable: bool
+
+    def __init__(self, config: ConfigType) -> None:
         """Initialize an input number."""
         self._config = config
-        self.editable = True
         self._current_value: float | None = config.get(CONF_INITIAL)
 
     @classmethod
-    def from_yaml(cls, config: dict) -> InputNumber:
-        """Return entity instance initialized from yaml storage."""
+    def from_storage(cls, config: ConfigType) -> Self:
+        """Return entity instance initialized from storage."""
+        input_num = cls(config)
+        input_num.editable = True
+        return input_num
+
+    @classmethod
+    def from_yaml(cls, config: ConfigType) -> Self:
+        """Return entity instance initialized from yaml."""
         input_num = cls(config)
         input_num.entity_id = f"{DOMAIN}.{config[CONF_ID]}"
         input_num.editable = False
@@ -300,7 +304,8 @@ class InputNumber(RestoreEntity):
 
         if num_value < self._minimum or num_value > self._maximum:
             raise vol.Invalid(
-                f"Invalid value for {self.entity_id}: {value} (range {self._minimum} - {self._maximum})"
+                f"Invalid value for {self.entity_id}: {value} (range {self._minimum} -"
+                f" {self._maximum})"
             )
 
         self._current_value = num_value
@@ -314,7 +319,7 @@ class InputNumber(RestoreEntity):
         """Decrement value."""
         await self.async_set_value(max(self._current_value - self._step, self._minimum))
 
-    async def async_update_config(self, config: dict) -> None:
+    async def async_update_config(self, config: ConfigType) -> None:
         """Handle when the config is updated."""
         self._config = config
         # just in case min/max values changed
